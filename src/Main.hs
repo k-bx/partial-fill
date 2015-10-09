@@ -7,45 +7,82 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Main where
 
 import Control.Lens
 import GHC.TypeLits (Symbol)
+import Data.Type.Set
+import GHC.TypeLits
+import Data.Proxy
 
-data SomeData = SomeData
+data Thing = Thing
     { fieldOne     :: String
-    , fieldTwo :: String
-    , fieldThree       :: String }
+    , fieldTwo     :: String
+    , fieldThree   :: String }
     deriving (Show, Eq)
-$(makeLensesWith abbreviatedFields ''SomeData)
 
-data Partially :: [Symbol] -> * -> * where
+data Partially :: * -> * -> * where
     Partially :: a -> Partially missing a
 
-initial :: Partially '["one", "two", "three"] SomeData
+-- Hack needed because I don't know how can 'Set' use non-'*' kind
+data FieldName (s::Symbol)
+
+type instance Cmp (FieldName v) (FieldName u) = CmpSymbol v u
+
+-- ** Initial data with everything undefined yet. Will be TH-generated.
+
+initial :: Partially (Set '[FieldName "fieldOne",
+                            FieldName "fieldTwo",
+                            FieldName "fieldThree"]) Thing
 initial =
-    Partially (SomeData undefined undefined undefined)
+    Partially (Thing undefined undefined undefined)
 
-setOne :: Partially '["one", "two", "three"] SomeData
-       -> Partially '["two", "three"] SomeData
-setOne (Partially d) = Partially (d { fieldOne = "first value" })
+-- ** Setter class
 
-setTwo :: Partially '["two", "three"] SomeData
-       -> Partially '["three"] SomeData
-setTwo (Partially d) = Partially (d { fieldTwo = "second value" })
+type FieldDel xs v fname = Partially (Delete (FieldName fname) xs) v
 
-setThree :: Partially '["three"] SomeData
-         -> Partially '[] SomeData
-setThree (Partially d) = Partially (d { fieldThree = "third value" })
+class PartialSetter v fname val where
+    partiallySet :: Proxy fname -> val -> Partially xs v -> FieldDel xs v fname
 
-finalizePartial :: Partially '[] a -> a
+-- ** Setter instances. Will be TH-generated
+
+instance PartialSetter Thing "fieldOne" String where
+    partiallySet _ val (Partially d) = Partially (d { fieldOne = val })
+
+instance PartialSetter Thing "fieldTwo" String where
+    partiallySet _ val (Partially d) = Partially (d { fieldTwo = val })
+
+instance PartialSetter Thing "fieldThree" String where
+    partiallySet _ val (Partially d) = Partially (d { fieldThree = val })
+
+-- ** Finalizer
+
+finalizePartial :: Partially (Set '[]) a -> a
 finalizePartial (Partially a) = a
 
-buildSomeBig :: SomeData
-buildSomeBig = finalizePartial (setThree (setTwo (setOne initial)))
+-- ** Let's see some action!
+
+type F = Proxy
+fld :: Proxy a
+fld = Proxy
 
 main :: IO ()
 main = do
-  print (finalizePartial (setThree (setTwo (setOne initial))))
-  -- print (finalizePartial (setTwo (setOne initial)))
+  print (finalizePartial
+           (partiallySet (fld::F "fieldThree") "value three"
+              (partiallySet (fld::F "fieldTwo") "value two"
+                 (partiallySet (fld::F "fieldOne") "value one" initial))))
+
+  -- might be slightly more readable
+  print (initial & partiallySet (fld::F "fieldThree") "value three"
+                 & partiallySet (fld::F "fieldTwo") "value two"
+                 & partiallySet (fld::F "fieldOne") "value one"
+                 & finalizePartial)
+
+  -- Boom!
+  -- print (initial & partiallySet (fld::F "fieldThree") "value three"
+  --                & finalizePartial)
